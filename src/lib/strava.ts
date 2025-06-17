@@ -1,4 +1,5 @@
 import { logger } from '@/lib/logger'
+import { SupabaseClient } from '@supabase/supabase-js'
 
 export interface StravaActivity {
   id: number
@@ -436,7 +437,7 @@ export class StravaAPI {
     currentAccessToken: string,
     currentRefreshToken: string,
     expiresAt: number,
-    supabaseClient: any
+    supabaseClient: SupabaseClient
   ): Promise<string> {
     logger.info('Ensuring valid token', {
       userId,

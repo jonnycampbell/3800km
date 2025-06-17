@@ -2,8 +2,19 @@
 
 import { useEffect, useState } from 'react'
 
+interface DebugInfoState {
+  timestamp?: string
+  userAgent?: string
+  url?: string
+  pathname?: string
+  environment?: string
+  hasConsole?: boolean
+  hasWindow?: boolean
+  hasDocument?: boolean
+}
+
 export default function DebugInfo() {
-  const [debugInfo, setDebugInfo] = useState<any>({})
+  const [debugInfo, setDebugInfo] = useState<DebugInfoState>({})
   
   useEffect(() => {
     console.log('🔧 DebugInfo component mounted')

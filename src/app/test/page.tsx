@@ -41,7 +41,7 @@ export default function TestPage() {
           <div className="space-y-2">
             <h2 className="text-xl font-semibold">What to check:</h2>
             <ul className="list-disc list-inside space-y-1 text-gray-600">
-              <li>Open your browser's developer console (F12)</li>
+              <li>Open your browser&apos;s developer console (F12)</li>
               <li>Look for log messages starting with 🧪</li>
               <li>Check the terminal running `npm run dev` for server logs</li>
               <li>Look for the red debug box in the top-left corner</li>
