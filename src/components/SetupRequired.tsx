@@ -1,6 +1,51 @@
 'use client'
 
+import { useEffect } from 'react'
+import { logger } from '@/lib/logger'
+
 export default function SetupRequired() {
+  useEffect(() => {
+    logger.info('SetupRequired component mounted', {
+      timestamp: new Date().toISOString(),
+      userAgent: typeof window !== 'undefined' ? window.navigator.userAgent : 'unknown',
+      url: typeof window !== 'undefined' ? window.location.href : 'unknown',
+      environment: process.env.NODE_ENV
+    }, 'setup-required')
+
+    // Log browser context for troubleshooting
+    if (typeof window !== 'undefined') {
+      logger.debug('Browser context for setup troubleshooting', {
+        location: {
+          href: window.location.href,
+          pathname: window.location.pathname,
+          search: window.location.search
+        },
+        navigator: {
+          userAgent: window.navigator.userAgent,
+          language: window.navigator.language,
+          onLine: window.navigator.onLine
+        },
+        localStorage: {
+          available: typeof window.localStorage !== 'undefined',
+          length: window.localStorage ? window.localStorage.length : 0
+        }
+      }, 'setup-required')
+    }
+  }, [])
+
+  const handleRefresh = () => {
+    logger.info('User triggered page refresh from SetupRequired', {
+      timestamp: new Date().toISOString(),
+      url: typeof window !== 'undefined' ? window.location.href : 'unknown'
+    }, 'setup-required')
+    
+    window.location.reload()
+  }
+
+  logger.debug('SetupRequired component rendering', {
+    timestamp: new Date().toISOString()
+  }, 'setup-required')
+
   return (
     <div className="min-h-screen bg-gray-50 flex items-center justify-center">
       <div className="max-w-2xl mx-auto px-4 sm:px-6 lg:px-8">
@@ -36,7 +81,7 @@ export default function SetupRequired() {
           </div>
           
           <button 
-            onClick={() => window.location.reload()} 
+            onClick={handleRefresh}
             className="font-medium bg-blue-600 text-white px-6 py-3 rounded-lg hover:bg-blue-700 transition-colors"
           >
             Refresh Page After Setup

@@ -1,3 +1,5 @@
+import { logger } from '@/lib/logger'
+
 export interface StravaActivity {
   id: number
   name: string
@@ -31,12 +33,45 @@ export class StravaAPI {
   private redirectUri: string
 
   constructor() {
+    logger.debug('Initializing StravaAPI class', undefined, 'strava-api')
+    
     this.clientId = process.env.STRAVA_CLIENT_ID!
     this.clientSecret = process.env.STRAVA_CLIENT_SECRET!
     this.redirectUri = process.env.STRAVA_REDIRECT_URI!
+
+    // Validate environment variables
+    const hasClientId = !!this.clientId
+    const hasClientSecret = !!this.clientSecret
+    const hasRedirectUri = !!this.redirectUri
+
+    logger.debug('StravaAPI environment validation', {
+      hasClientId,
+      hasClientSecret,
+      hasRedirectUri,
+      redirectUri: this.redirectUri // Safe to log redirect URI
+    }, 'strava-api')
+
+    if (!hasClientId || !hasClientSecret || !hasRedirectUri) {
+      const missing = []
+      if (!hasClientId) missing.push('STRAVA_CLIENT_ID')
+      if (!hasClientSecret) missing.push('STRAVA_CLIENT_SECRET')
+      if (!hasRedirectUri) missing.push('STRAVA_REDIRECT_URI')
+      
+      logger.error('Missing required Strava environment variables', undefined, {
+        missing,
+        environment: process.env.NODE_ENV
+      }, 'strava-api')
+    } else {
+      logger.info('StravaAPI initialized successfully', {
+        clientIdLength: this.clientId.length,
+        redirectUri: this.redirectUri
+      }, 'strava-api')
+    }
   }
 
   getAuthUrl(): string {
+    logger.info('Generating Strava authorization URL', undefined, 'strava-api')
+    
     const params = new URLSearchParams({
       client_id: this.clientId,
       redirect_uri: this.redirectUri,
@@ -44,49 +79,129 @@ export class StravaAPI {
       scope: 'read,activity:read',
     })
     
-    return `https://www.strava.com/oauth/authorize?${params.toString()}`
+    const authUrl = `https://www.strava.com/oauth/authorize?${params.toString()}`
+    
+    logger.debug('Generated authorization URL', {
+      clientId: this.clientId,
+      redirectUri: this.redirectUri,
+      scope: 'read,activity:read',
+      urlLength: authUrl.length
+    }, 'strava-api')
+    
+    return authUrl
   }
 
   async exchangeCodeForToken(code: string): Promise<StravaTokenResponse> {
-    const response = await fetch('https://www.strava.com/oauth/token', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        client_id: this.clientId,
-        client_secret: this.clientSecret,
-        code,
-        grant_type: 'authorization_code',
-      }),
-    })
+    logger.info('Exchanging authorization code for token', {
+      codeLength: code.length,
+      codePrefix: code.substring(0, 10) + '...'
+    }, 'strava-api')
+    
+    const timer = logger.time('strava-token-exchange', 'strava-api')
+    
+    try {
+      const response = await fetch('https://www.strava.com/oauth/token', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          client_id: this.clientId,
+          client_secret: this.clientSecret,
+          code,
+          grant_type: 'authorization_code',
+        }),
+      })
 
-    if (!response.ok) {
-      throw new Error('Failed to exchange code for token')
+      timer.end()
+
+      logger.debug('Token exchange response received', {
+        status: response.status,
+        statusText: response.statusText,
+        ok: response.ok
+      }, 'strava-api')
+
+      if (!response.ok) {
+        const errorText = await response.text()
+        logger.error('Failed to exchange code for token', undefined, {
+          status: response.status,
+          statusText: response.statusText,
+          errorText
+        }, 'strava-api')
+        throw new Error('Failed to exchange code for token')
+      }
+
+      const tokenData: StravaTokenResponse = await response.json()
+      
+      logger.info('Successfully exchanged code for token', {
+        hasAccessToken: !!tokenData.access_token,
+        hasRefreshToken: !!tokenData.refresh_token,
+        expiresAt: new Date(tokenData.expires_at * 1000).toISOString(),
+        athleteId: tokenData.athlete.id,
+        athleteName: `${tokenData.athlete.firstname} ${tokenData.athlete.lastname}`
+      }, 'strava-api')
+
+      return tokenData
+    } catch (error) {
+      timer.end()
+      logger.error('Error exchanging code for token', error, undefined, 'strava-api')
+      throw error
     }
-
-    return response.json()
   }
 
   async refreshToken(refreshToken: string): Promise<StravaTokenResponse> {
-    const response = await fetch('https://www.strava.com/oauth/token', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        client_id: this.clientId,
-        client_secret: this.clientSecret,
-        refresh_token: refreshToken,
-        grant_type: 'refresh_token',
-      }),
-    })
+    logger.info('Refreshing Strava access token', {
+      refreshTokenLength: refreshToken.length
+    }, 'strava-api')
+    
+    const timer = logger.time('strava-token-refresh', 'strava-api')
+    
+    try {
+      const response = await fetch('https://www.strava.com/oauth/token', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          client_id: this.clientId,
+          client_secret: this.clientSecret,
+          refresh_token: refreshToken,
+          grant_type: 'refresh_token',
+        }),
+      })
 
-    if (!response.ok) {
-      throw new Error('Failed to refresh token')
+      timer.end()
+
+      logger.debug('Token refresh response received', {
+        status: response.status,
+        statusText: response.statusText,
+        ok: response.ok
+      }, 'strava-api')
+
+      if (!response.ok) {
+        const errorText = await response.text()
+        logger.error('Failed to refresh token', undefined, {
+          status: response.status,
+          statusText: response.statusText,
+          errorText
+        }, 'strava-api')
+        throw new Error('Failed to refresh token')
+      }
+
+      const tokenData: StravaTokenResponse = await response.json()
+      
+      logger.info('Successfully refreshed token', {
+        hasAccessToken: !!tokenData.access_token,
+        hasRefreshToken: !!tokenData.refresh_token,
+        expiresAt: new Date(tokenData.expires_at * 1000).toISOString()
+      }, 'strava-api')
+
+      return tokenData
+    } catch (error) {
+      timer.end()
+      logger.error('Error refreshing token', error, undefined, 'strava-api')
+      throw error
     }
-
-    return response.json()
   }
 
   async getActivities(
@@ -94,55 +209,178 @@ export class StravaAPI {
     page = 1,
     perPage = 200
   ): Promise<StravaActivity[]> {
-    const response = await fetch(
-      `https://www.strava.com/api/v3/athlete/activities?page=${page}&per_page=${perPage}`,
-      {
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-        },
+    logger.info('Fetching activities from Strava', {
+      page,
+      perPage,
+      accessTokenLength: accessToken.length
+    }, 'strava-api')
+    
+    const timer = logger.time(`strava-get-activities-page-${page}`, 'strava-api')
+    
+    try {
+      const response = await fetch(
+        `https://www.strava.com/api/v3/athlete/activities?page=${page}&per_page=${perPage}`,
+        {
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+          },
+        }
+      )
+
+      timer.end()
+
+      logger.debug('Get activities response received', {
+        page,
+        perPage,
+        status: response.status,
+        statusText: response.statusText,
+        ok: response.ok
+      }, 'strava-api')
+
+      if (!response.ok) {
+        const errorText = await response.text()
+        logger.error('Failed to fetch activities', undefined, {
+          page,
+          perPage,
+          status: response.status,
+          statusText: response.statusText,
+          errorText
+        }, 'strava-api')
+        throw new Error('Failed to fetch activities')
       }
-    )
 
-    if (!response.ok) {
-      throw new Error('Failed to fetch activities')
+      const activities: StravaActivity[] = await response.json()
+      
+      logger.info('Successfully fetched activities', {
+        page,
+        perPage,
+        activitiesCount: activities.length,
+        firstActivityDate: activities[0]?.start_date,
+        lastActivityDate: activities[activities.length - 1]?.start_date
+      }, 'strava-api')
+
+      return activities
+    } catch (error) {
+      timer.end()
+      logger.error('Error fetching activities', error, {
+        page,
+        perPage
+      }, 'strava-api')
+      throw error
     }
-
-    return response.json()
   }
 
   async getAllActivities(accessToken: string): Promise<StravaActivity[]> {
+    logger.info('Starting to fetch all activities from Strava', {
+      accessTokenLength: accessToken.length
+    }, 'strava-api')
+    
     const allActivities: StravaActivity[] = []
     let page = 1
     let hasMore = true
+    const timer = logger.time('strava-get-all-activities', 'strava-api')
 
-    while (hasMore) {
-      const activities = await this.getActivities(accessToken, page)
-      
-      if (activities.length === 0) {
-        hasMore = false
-      } else {
-        allActivities.push(...activities)
-        page++
+    try {
+      while (hasMore) {
+        logger.debug('Fetching activities page', { page }, 'strava-api')
+        
+        const activities = await this.getActivities(accessToken, page)
+        
+        if (activities.length === 0) {
+          hasMore = false
+          logger.debug('No more activities found, stopping pagination', { page }, 'strava-api')
+        } else {
+          allActivities.push(...activities)
+          logger.debug('Added activities to collection', {
+            page,
+            pageActivities: activities.length,
+            totalActivities: allActivities.length
+          }, 'strava-api')
+          page++
+        }
       }
-    }
 
-    return allActivities
+      timer.end()
+      
+      logger.info('Successfully fetched all activities', {
+        totalPages: page - 1,
+        totalActivities: allActivities.length,
+        dateRange: allActivities.length > 0 ? {
+          earliest: allActivities[allActivities.length - 1]?.start_date,
+          latest: allActivities[0]?.start_date
+        } : null
+      }, 'strava-api')
+
+      return allActivities
+    } catch (error) {
+      timer.end()
+      logger.error('Error fetching all activities', error, {
+        completedPages: page - 1,
+        partialResults: allActivities.length
+      }, 'strava-api')
+      throw error
+    }
   }
 
   filterHikingActivities(activities: StravaActivity[]): StravaActivity[] {
+    logger.info('Starting to filter hiking activities', {
+      totalActivities: activities.length
+    }, 'strava-api')
+    
     const hikingTypes = ['Hike']
-    return activities.filter(activity => {
+    const hashtag = '#3800km'
+    
+    logger.debug('Filter criteria', {
+      hikingTypes,
+      hashtag,
+      caseSensitive: false
+    }, 'strava-api')
+    
+    const filteredActivities = activities.filter(activity => {
       // First check if it's a hiking activity
       const isHikingType = hikingTypes.includes(activity.type) || 
                           hikingTypes.includes(activity.sport_type)
       
       // Then check if it has the #3800km hashtag in the description
       const hasHashtag = activity.description && 
-                        activity.description.toLowerCase().includes('#3800km')
+                        activity.description.toLowerCase().includes(hashtag.toLowerCase())
       
-      return isHikingType && hasHashtag
+      const included = isHikingType && hasHashtag
+      
+      logger.debug('Activity filter evaluation', {
+        activityId: activity.id,
+        activityName: activity.name,
+        type: activity.type,
+        sport_type: activity.sport_type,
+        isHikingType,
+        hasDescription: !!activity.description,
+        descriptionLength: activity.description?.length || 0,
+        hasHashtag,
+        included
+      }, 'strava-api')
+      
+      return included
     })
+
+    // Calculate summary statistics
+    const totalDistance = filteredActivities.reduce((sum, activity) => sum + activity.distance, 0)
+    const totalKm = totalDistance / 1000
+    
+    logger.info('Hiking activities filtering completed', {
+      totalActivities: activities.length,
+      filteredActivities: filteredActivities.length,
+      filterRate: ((filteredActivities.length / activities.length) * 100).toFixed(1) + '%',
+      totalDistance,
+      totalKm: Math.round(totalKm * 10) / 10,
+      dateRange: filteredActivities.length > 0 ? {
+        earliest: filteredActivities[filteredActivities.length - 1]?.start_date,
+        latest: filteredActivities[0]?.start_date
+      } : null
+    }, 'strava-api')
+
+    return filteredActivities
   }
 }
 
+logger.info('Creating Strava API instance', undefined, 'strava-api')
 export const stravaAPI = new StravaAPI() 

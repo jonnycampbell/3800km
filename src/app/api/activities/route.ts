@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server'
 import { cache, CACHE_KEYS, CACHE_TTL } from '@/lib/cache'
+import { logger, generateRequestId, withRequestId } from '@/lib/logger'
 
 // Enable better caching for production
 export const dynamic = 'force-dynamic'
@@ -27,17 +28,25 @@ interface StravaTokenResponse {
   expires_at: number
 }
 
-async function refreshStravaToken(): Promise<string | null> {
+async function refreshStravaToken(requestId: string): Promise<string | null> {
+  logger.debug('Attempting to refresh Strava token', undefined, 'activities-api', undefined, requestId)
+  
   const clientId = process.env.STRAVA_CLIENT_ID
   const clientSecret = process.env.STRAVA_CLIENT_SECRET
   const refreshToken = process.env.STRAVA_REFRESH_TOKEN
 
   if (!clientId || !clientSecret || !refreshToken) {
-    console.error('Missing Strava credentials for token refresh')
+    logger.error('Missing Strava credentials for token refresh', undefined, {
+      hasClientId: !!clientId,
+      hasClientSecret: !!clientSecret,
+      hasRefreshToken: !!refreshToken
+    }, 'activities-api', undefined, requestId)
     return null
   }
 
   try {
+    logger.info('Making token refresh request to Strava', undefined, 'activities-api', undefined, requestId)
+    
     const response = await fetch('https://www.strava.com/oauth/token', {
       method: 'POST',
       headers: {
@@ -51,31 +60,54 @@ async function refreshStravaToken(): Promise<string | null> {
       })
     })
 
+    logger.debug('Token refresh response received', {
+      status: response.status,
+      statusText: response.statusText,
+      ok: response.ok
+    }, 'activities-api', undefined, requestId)
+
     if (!response.ok) {
-      console.error('Failed to refresh token:', response.status, await response.text())
+      const errorText = await response.text()
+      logger.error('Failed to refresh token', undefined, {
+        status: response.status,
+        statusText: response.statusText,
+        errorText
+      }, 'activities-api', undefined, requestId)
       return null
     }
 
     const data: StravaTokenResponse = await response.json()
-    console.log('Token refreshed successfully, expires at:', new Date(data.expires_at * 1000))
+    logger.info('Token refreshed successfully', {
+      expiresAt: new Date(data.expires_at * 1000).toISOString(),
+      hasAccessToken: !!data.access_token,
+      hasRefreshToken: !!data.refresh_token
+    }, 'activities-api', undefined, requestId)
     
     return data.access_token
   } catch (error) {
-    console.error('Error refreshing token:', error)
+    logger.error('Error refreshing token', error, undefined, 'activities-api', undefined, requestId)
     return null
   }
 }
 
-async function fetchStravaActivities(accessToken: string): Promise<StravaActivity[]> {
+async function fetchStravaActivities(accessToken: string, requestId: string): Promise<StravaActivity[]> {
+  logger.debug('Starting Strava activities fetch', undefined, 'activities-api', undefined, requestId)
+  
   // Check cache first
   const cachedActivities = cache.get<StravaActivity[]>(CACHE_KEYS.STRAVA_ACTIVITIES)
   if (cachedActivities) {
     const cacheInfo = cache.getInfo(CACHE_KEYS.STRAVA_ACTIVITIES)
-    console.log(`📦 Using cached activities (age: ${cacheInfo.age}s, ttl: ${cacheInfo.ttl}s)`)
+    logger.info('Using cached activities', {
+      cacheAge: cacheInfo.age,
+      cacheTtl: cacheInfo.ttl,
+      activitiesCount: cachedActivities.length
+    }, 'activities-api', undefined, requestId)
     return cachedActivities
   }
 
-  console.log('🌐 Fetching fresh activities from Strava API...')
+  logger.info('Fetching fresh activities from Strava API', undefined, 'activities-api', undefined, requestId)
+  
+  const timer = logger.time('strava-api-fetch', 'activities-api')
   
   // Try to fetch activities with current token
   let response = await fetch(
@@ -89,14 +121,21 @@ async function fetchStravaActivities(accessToken: string): Promise<StravaActivit
     }
   )
 
+  logger.debug('Initial Strava API response', {
+    status: response.status,
+    statusText: response.statusText,
+    ok: response.ok,
+    headers: Object.fromEntries(response.headers.entries())
+  }, 'activities-api', undefined, requestId)
+
   // If unauthorized, try to refresh the token
   if (response.status === 401) {
-    console.log('Access token expired or invalid, attempting to refresh...')
-    const newAccessToken = await refreshStravaToken()
+    logger.warn('Access token expired or invalid, attempting to refresh', undefined, 'activities-api', undefined, requestId)
+    const newAccessToken = await refreshStravaToken(requestId)
     
     if (newAccessToken) {
       accessToken = newAccessToken
-      console.log('Token refreshed, retrying request...')
+      logger.info('Token refreshed, retrying request', undefined, 'activities-api', undefined, requestId)
       
       // Retry with new token
       response = await fetch(
@@ -108,12 +147,27 @@ async function fetchStravaActivities(accessToken: string): Promise<StravaActivit
           next: { revalidate: 900 }
         }
       )
+      
+      logger.debug('Retry Strava API response', {
+        status: response.status,
+        statusText: response.statusText,
+        ok: response.ok
+      }, 'activities-api', undefined, requestId)
+    } else {
+      logger.error('Failed to refresh token, cannot retry request', undefined, undefined, 'activities-api', undefined, requestId)
     }
   }
 
+  timer.end()
+
   if (!response.ok) {
     const errorText = await response.text()
-    console.error('Strava API Error:', response.status, response.statusText, errorText)
+    logger.error('Strava API Error', undefined, {
+      status: response.status,
+      statusText: response.statusText,
+      errorText,
+      url: response.url
+    }, 'activities-api', undefined, requestId)
     
     if (response.status === 401) {
       throw new Error('Strava authorization failed')
@@ -123,48 +177,77 @@ async function fetchStravaActivities(accessToken: string): Promise<StravaActivit
   }
 
   const activities: StravaActivity[] = await response.json()
-  console.log(`✅ Fetched ${activities.length} fresh activities from Strava`)
+  logger.info('Successfully fetched activities from Strava', {
+    activitiesCount: activities.length,
+    firstActivityDate: activities[0]?.start_date,
+    lastActivityDate: activities[activities.length - 1]?.start_date
+  }, 'activities-api', undefined, requestId)
   
   // Cache the activities
   cache.set(CACHE_KEYS.STRAVA_ACTIVITIES, activities, CACHE_TTL.ACTIVITIES)
-  console.log(`💾 Cached activities for ${CACHE_TTL.ACTIVITIES} minutes`)
+  logger.debug('Cached activities', {
+    cacheKey: CACHE_KEYS.STRAVA_ACTIVITIES,
+    ttlMinutes: CACHE_TTL.ACTIVITIES,
+    activitiesCount: activities.length
+  }, 'activities-api', undefined, requestId)
   
   return activities
 }
 
-async function fetchActivityDetails(activityId: number, accessToken: string): Promise<unknown> {
-  const cacheKey = CACHE_KEYS.STRAVA_ACTIVITY_DETAILS(activityId)
-  
-  // Check cache first
-  const cachedDetails = cache.get(cacheKey)
-  if (cachedDetails) {
-    return cachedDetails
-  }
-
-  // Fetch from API
-  const response = await fetch(`https://www.strava.com/api/v3/activities/${activityId}`, {
-    headers: {
-      Authorization: `Bearer ${accessToken}`,
-    },
-    next: { revalidate: 3600 } // 1 hour
-  })
-
-  if (response.ok) {
-    const details = await response.json()
-    cache.set(cacheKey, details, CACHE_TTL.ACTIVITY_DETAILS)
-    return details
-  }
-  
-  return null
-}
-
 export async function GET(request: Request) {
+  const requestId = generateRequestId()
+  const timer = logger.time('activities-api-request', 'activities-api')
+  
+  logger.logRequest('GET', request.url, {
+    userAgent: request.headers.get('user-agent'),
+    referer: request.headers.get('referer')
+  }, 'activities-api', requestId)
+
   try {
+    // Validate environment
+    const requiredEnvVars = [
+      'STRAVA_ACCESS_TOKEN',
+      'STRAVA_CLIENT_ID', 
+      'STRAVA_CLIENT_SECRET',
+      'STRAVA_REFRESH_TOKEN'
+    ]
+    
+    if (!logger.validateEnvironment(requiredEnvVars, 'activities-api')) {
+      const missingVars = requiredEnvVars.filter(varName => !process.env[varName])
+      
+      logger.error('Environment validation failed', undefined, {
+        missingVars,
+        environment: process.env.NODE_ENV
+      }, 'activities-api', undefined, requestId)
+      
+      const errorMessage = process.env.NODE_ENV === 'production' 
+        ? 'Server configuration error. Please check environment variables.'
+        : `Missing environment variables: ${missingVars.join(', ')}`
+      
+      const response = NextResponse.json(
+        { 
+          error: errorMessage,
+          setupRequired: true,
+          missingVariables: missingVars,
+          requestId 
+        },
+        { status: 500 }
+      )
+      
+      logger.logResponse('GET', request.url, 500, undefined, { errorMessage }, 'activities-api', requestId)
+      return withRequestId(response, requestId)
+    }
+
     const { searchParams } = new URL(request.url)
     const forceRefresh = searchParams.get('refresh') === 'true'
     
+    logger.debug('Request parameters parsed', {
+      forceRefresh,
+      searchParams: Object.fromEntries(searchParams.entries())
+    }, 'activities-api', undefined, requestId)
+    
     if (forceRefresh) {
-      console.log('🔄 Force refresh requested, clearing cache...')
+      logger.info('Force refresh requested, clearing cache', undefined, 'activities-api', undefined, requestId)
       cache.delete(CACHE_KEYS.STRAVA_ACTIVITIES)
       cache.delete(CACHE_KEYS.FILTERED_ACTIVITIES)
     }
@@ -174,119 +257,146 @@ export async function GET(request: Request) {
       const cachedFiltered = cache.get(CACHE_KEYS.FILTERED_ACTIVITIES)
       if (cachedFiltered) {
         const cacheInfo = cache.getInfo(CACHE_KEYS.FILTERED_ACTIVITIES)
-        console.log(`⚡ Returning cached filtered activities (age: ${cacheInfo.age}s)`)
+        logger.info('Returning cached filtered activities', {
+          cacheAge: cacheInfo.age,
+          activitiesCount: Array.isArray(cachedFiltered) ? cachedFiltered.length : 'unknown'
+        }, 'activities-api', undefined, requestId)
         
         const response = NextResponse.json(cachedFiltered)
         response.headers.set('Cache-Control', 'public, s-maxage=900, stale-while-revalidate=1800')
         response.headers.set('X-Cache-Status', 'HIT')
         response.headers.set('X-Cache-Age', cacheInfo.age?.toString() || '0')
-        return response
+        
+        timer.end()
+        logger.logResponse('GET', request.url, 200, undefined, { cacheHit: true }, 'activities-api', requestId)
+        return withRequestId(response, requestId)
       }
     }
 
     const accessToken = process.env.STRAVA_ACCESS_TOKEN
 
     if (!accessToken) {
-      console.error('STRAVA_ACCESS_TOKEN not found in environment variables')
+      logger.error('STRAVA_ACCESS_TOKEN not found in environment variables', undefined, undefined, 'activities-api', undefined, requestId)
       
-      // Improved error messages for production debugging
-      const missingVars = []
-      if (!process.env.STRAVA_ACCESS_TOKEN) missingVars.push('STRAVA_ACCESS_TOKEN')
-      if (!process.env.STRAVA_CLIENT_ID) missingVars.push('STRAVA_CLIENT_ID')
-      if (!process.env.STRAVA_CLIENT_SECRET) missingVars.push('STRAVA_CLIENT_SECRET')
-      if (!process.env.STRAVA_REFRESH_TOKEN) missingVars.push('STRAVA_REFRESH_TOKEN')
-      
-      // More detailed error for production
       const errorMessage = process.env.NODE_ENV === 'production' 
-        ? `Production environment missing required Strava configuration. Check your deployment platform environment variables.`
-        : `Missing environment variables: ${missingVars.join(', ')}. Please configure these in your .env.local file.`
+        ? 'Authentication configuration error'
+        : 'STRAVA_ACCESS_TOKEN environment variable is not set'
       
-      return NextResponse.json({ 
-        error: 'Strava configuration incomplete',
-        message: errorMessage,
-        missingVariables: missingVars,
-        setupRequired: true,
-        environment: process.env.NODE_ENV
-      }, { status: 500 })
+      const response = NextResponse.json(
+        { 
+          error: errorMessage,
+          setupRequired: true,
+          requestId
+        },
+        { status: 500 }
+      )
+      
+      timer.end()
+      logger.logResponse('GET', request.url, 500, undefined, { error: 'missing_access_token' }, 'activities-api', requestId)
+      return withRequestId(response, requestId)
     }
 
-    // Fetch activities (from cache or API)
-    const activities = await fetchStravaActivities(accessToken)
+    logger.debug('Access token found, proceeding with API call', {
+      hasToken: true,
+      tokenLength: accessToken.length
+    }, 'activities-api', undefined, requestId)
 
-    // Filter for hiking activities by type
+    // Fetch activities from Strava
+    const activities = await fetchStravaActivities(accessToken, requestId)
+
+    // Filter for hiking activities with #3800km hashtag
+    logger.info('Filtering activities for hiking with #3800km hashtag', {
+      totalActivities: activities.length
+    }, 'activities-api', undefined, requestId)
+
     const hikingTypes = ['Hike']
-    const potentialHikingActivities = activities.filter(activity => 
-      hikingTypes.includes(activity.type) || hikingTypes.includes(activity.sport_type)
-    )
-    
-    console.log(`🥾 Found ${potentialHikingActivities.length} potential hiking activities`)
-
-    // Fetch detailed data for all hiking activities
-    console.log('📋 Fetching detailed data for hiking activities...')
-    
-    const detailPromises = potentialHikingActivities.map(async activity => {
-      try {
-        const detailedActivity = await fetchActivityDetails(activity.id, accessToken)
-        
-        if (detailedActivity) {
-          const activityWithDescription = detailedActivity as { description?: string }
-          const hasHashtag = activityWithDescription.description && 
-                            activityWithDescription.description.toLowerCase().includes('#3800km')
-          
-          console.log(`🔍 "${activity.name}": ${hasHashtag ? '✅ HAS #3800km' : '❌ No hashtag'}`)
-          
-          return hasHashtag ? {
-            ...activity,
-            description: activityWithDescription.description
-          } : null
-        }
-        return null
-      } catch (error) {
-        console.warn(`⚠️ Error fetching details for "${activity.name}":`, error)
-        return null
-      }
+    const filteredActivities = activities.filter(activity => {
+      const isHikingType = hikingTypes.includes(activity.type) || 
+                          hikingTypes.includes(activity.sport_type)
+      
+      const hasHashtag = activity.description && 
+                        activity.description.toLowerCase().includes('#3800km')
+      
+      logger.debug('Activity filter check', {
+        activityId: activity.id,
+        activityName: activity.name,
+        type: activity.type,
+        sport_type: activity.sport_type,
+        isHikingType,
+        hasDescription: !!activity.description,
+        hasHashtag,
+        included: isHikingType && hasHashtag
+      }, 'activities-api', undefined, requestId)
+      
+      return isHikingType && hasHashtag
     })
 
-    const results = await Promise.all(detailPromises)
-    const detailedHikingActivities = results.filter(activity => activity !== null)
+    logger.info('Activity filtering completed', {
+      totalActivities: activities.length,
+      filteredActivities: filteredActivities.length,
+      totalDistance: filteredActivities.reduce((sum, a) => sum + a.distance, 0),
+      filterCriteria: { hikingTypes, hashtag: '#3800km' }
+    }, 'activities-api', undefined, requestId)
 
-    console.log(`✅ Filtered to ${detailedHikingActivities.length} hiking activities with #3800km hashtag`)
+    // Calculate summary statistics
+    const totalDistance = filteredActivities.reduce((sum, activity) => sum + activity.distance, 0)
+    const totalKm = totalDistance / 1000
+    const goalKm = 3800
+    const progressPercentage = (totalKm / goalKm) * 100
 
-    // Transform to match component interface
-    const transformedActivities = detailedHikingActivities.map(activity => ({
-      id: activity.id,
-      strava_id: activity.id.toString(),
-      name: activity.name,
-      type: activity.type,
-      distance: activity.distance,
-      moving_time: activity.moving_time,
-      start_date: activity.start_date,
-      location_city: activity.location_city || null,
-      location_country: activity.location_country || null,
-      elevation_gain: activity.total_elevation_gain,
-    }))
+    const stats = {
+      totalActivities: filteredActivities.length,
+      totalDistance,
+      totalKm: Math.round(totalKm * 10) / 10,
+      goalKm,
+      progressPercentage: Math.round(progressPercentage * 10) / 10,
+      remainingKm: Math.round((goalKm - totalKm) * 10) / 10
+    }
 
-    // Cache the final filtered results
-    cache.set(CACHE_KEYS.FILTERED_ACTIVITIES, transformedActivities, CACHE_TTL.FILTERED_ACTIVITIES)
-    console.log(`💾 Cached filtered results for ${CACHE_TTL.FILTERED_ACTIVITIES} minutes`)
+    logger.info('Statistics calculated', stats, 'activities-api', undefined, requestId)
 
-    // Return with appropriate cache headers
-    const response = NextResponse.json(transformedActivities)
+    // Cache the filtered results
+    cache.set(CACHE_KEYS.FILTERED_ACTIVITIES, filteredActivities, CACHE_TTL.FILTERED_ACTIVITIES)
+    logger.debug('Cached filtered activities', {
+      cacheKey: CACHE_KEYS.FILTERED_ACTIVITIES,
+      ttlMinutes: CACHE_TTL.FILTERED_ACTIVITIES
+    }, 'activities-api', undefined, requestId)
+
+    const response = NextResponse.json(filteredActivities)
     response.headers.set('Cache-Control', 'public, s-maxage=900, stale-while-revalidate=1800')
     response.headers.set('X-Cache-Status', 'MISS')
-    return response
+    response.headers.set('X-Stats', JSON.stringify(stats))
+
+    timer.end()
+    logger.logResponse('GET', request.url, 200, undefined, {
+      cacheHit: false,
+      activitiesCount: filteredActivities.length,
+      stats
+    }, 'activities-api', requestId)
+
+    return withRequestId(response, requestId)
+
   } catch (error) {
-    console.error('❌ Error fetching activities:', error)
-    
-    // Better error response for production
+    timer.end()
+    logger.error('Activities API error', error, {
+      url: request.url,
+      method: request.method
+    }, 'activities-api', undefined, requestId)
+
     const errorMessage = error instanceof Error ? error.message : 'Unknown error occurred'
-    const isProduction = process.env.NODE_ENV === 'production'
     
-    return NextResponse.json({ 
-      error: 'Failed to fetch activities',
-      message: isProduction ? 'Server error occurred' : errorMessage,
-      ...(isProduction ? {} : { details: errorMessage }),
-      environment: process.env.NODE_ENV
-    }, { status: 500 })
+    const response = NextResponse.json(
+      { 
+        error: process.env.NODE_ENV === 'production' 
+          ? 'Internal server error' 
+          : errorMessage,
+        setupRequired: errorMessage.includes('authorization') || errorMessage.includes('token'),
+        requestId
+      },
+      { status: 500 }
+    )
+
+    logger.logResponse('GET', request.url, 500, undefined, { error: errorMessage }, 'activities-api', requestId)
+    return withRequestId(response, requestId)
   }
 } 

@@ -1,7 +1,11 @@
 import ActivityList from '@/components/ActivityList'
 import SetupRequired from '@/components/SetupRequired'
+import { logger } from '@/lib/logger'
 
 async function getActivities() {
+  const startTime = Date.now()
+  logger.info('Starting activities fetch from dashboard', undefined, 'dashboard-page')
+  
   try {
     // Fix: Use proper base URL for both development and production
     // In production, we'll use relative URLs which work with any domain
@@ -10,54 +14,139 @@ async function getActivities() {
                      ? '' // Use relative URLs in production
                      : 'http://localhost:3000')
     
-    const response = await fetch(`${baseUrl}/api/activities`, {
+    const apiUrl = `${baseUrl}/api/activities`
+    logger.debug('Constructed API URL', { 
+      baseUrl, 
+      apiUrl,
+      environment: process.env.NODE_ENV,
+      hasBaseUrl: !!process.env.NEXT_PUBLIC_BASE_URL
+    }, 'dashboard-page')
+    
+    logger.info('Making fetch request to activities API', { apiUrl }, 'dashboard-page')
+    
+    const response = await fetch(apiUrl, {
       // Fix: Remove cache: 'no-store' which causes build issues
       next: { revalidate: 900 } // Cache for 15 minutes instead
     })
     
+    const duration = Date.now() - startTime
+    logger.debug('Activities API response received', {
+      status: response.status,
+      statusText: response.statusText,
+      ok: response.ok,
+      duration: `${duration}ms`,
+      headers: {
+        cacheStatus: response.headers.get('x-cache-status'),
+        cacheAge: response.headers.get('x-cache-age'),
+        requestId: response.headers.get('x-request-id')
+      }
+    }, 'dashboard-page')
+    
     if (!response.ok) {
       const errorData = await response.json().catch(() => ({}))
-      console.error('Failed to fetch activities:', errorData)
+      logger.error('Activities API returned error', undefined, {
+        status: response.status,
+        statusText: response.statusText,
+        errorData,
+        duration: `${duration}ms`
+      }, 'dashboard-page')
       
       if (errorData.setupRequired) {
+        logger.warn('Setup required detected from API response', errorData, 'dashboard-page')
         throw new Error('SETUP_REQUIRED')
       }
       
+      logger.warn('API error but continuing with empty activities', {
+        status: response.status,
+        errorData
+      }, 'dashboard-page')
       return []
     }
     
-    return await response.json()
+    const activities = await response.json()
+    logger.info('Successfully fetched activities from API', {
+      activitiesCount: activities.length,
+      duration: `${duration}ms`,
+      totalDistance: activities.reduce((sum: number, activity: { distance: number }) => sum + activity.distance, 0),
+      cacheStatus: response.headers.get('x-cache-status')
+    }, 'dashboard-page')
+    
+    return activities
   } catch (error) {
-    console.error('Error fetching activities:', error)
+    const duration = Date.now() - startTime
+    logger.error('Error fetching activities', error, { 
+      duration: `${duration}ms`,
+      errorType: error instanceof Error ? error.constructor.name : typeof error
+    }, 'dashboard-page')
+    
     if (error instanceof Error && error.message === 'SETUP_REQUIRED') {
+      logger.info('Setup required, throwing error to parent', undefined, 'dashboard-page')
       throw error
     }
+    
+    logger.warn('Returning empty activities due to error', undefined, 'dashboard-page')
     return []
   }
 }
 
 export default async function Dashboard() {
+  const pageStartTime = Date.now()
+  logger.info('Dashboard page rendering started', {
+    timestamp: new Date().toISOString(),
+    environment: process.env.NODE_ENV
+  }, 'dashboard-page')
+  
   let activities = []
   let setupRequired = false
   
   try {
+    logger.debug('Attempting to fetch activities', undefined, 'dashboard-page')
     activities = await getActivities()
+    logger.debug('Activities fetch completed', { activitiesCount: activities.length }, 'dashboard-page')
   } catch (error) {
+    logger.error('Error in dashboard activities fetch', error, undefined, 'dashboard-page')
     if (error instanceof Error && error.message === 'SETUP_REQUIRED') {
       setupRequired = true
+      logger.info('Setting setupRequired flag to true', undefined, 'dashboard-page')
     }
   }
   
+  // Calculate statistics
   const totalDistance = activities.reduce((sum: number, activity: { distance: number }) => sum + activity.distance, 0)
   const totalKm = totalDistance / 1000
   const goalKm = 3800
   const remainingKm = goalKm - totalKm
   const progressPercentage = (totalKm / goalKm) * 100
 
+  const stats = {
+    totalActivities: activities.length,
+    totalDistance,
+    totalKm: Math.round(totalKm * 10) / 10,
+    goalKm,
+    remainingKm: Math.round(remainingKm * 10) / 10,
+    progressPercentage: Math.round(progressPercentage * 10) / 10
+  }
+
+  logger.info('Dashboard statistics calculated', stats, 'dashboard-page')
+
+  const pageRenderTime = Date.now() - pageStartTime
+  logger.info('Dashboard page rendering completed', {
+    renderTime: `${pageRenderTime}ms`,
+    setupRequired,
+    activitiesCount: activities.length,
+    stats
+  }, 'dashboard-page')
+
   // Show setup instructions if needed
   if (setupRequired) {
+    logger.info('Rendering SetupRequired component', undefined, 'dashboard-page')
     return <SetupRequired />
   }
+
+  logger.debug('Rendering main dashboard content', {
+    hasActivities: activities.length > 0,
+    stats
+  }, 'dashboard-page')
 
   return (
     <div className="min-h-screen bg-gray-50">
