@@ -61,43 +61,36 @@ export async function POST(request: Request) {
       userId,
       stravaId: userData.strava_id,
       tokenExpiresAt: new Date(userData.expires_at * 1000).toISOString(),
-      tokenExpired: Date.now() / 1000 > userData.expires_at
+      tokenExpired: stravaAPI.isTokenExpired(userData.expires_at),
+      shouldRefresh: stravaAPI.shouldRefreshToken(userData.expires_at)
     }, 'sync-activities-api', userId, requestId)
 
-    // Check if token needs refresh
-    let accessToken = userData.access_token
-    if (Date.now() / 1000 > userData.expires_at) {
-      logger.info('Access token expired, refreshing', {
+    // Ensure we have a valid access token (handles refresh automatically)
+    let accessToken: string
+    try {
+      accessToken = await stravaAPI.ensureValidToken(
         userId,
-        expiresAt: new Date(userData.expires_at * 1000).toISOString(),
-        currentTime: new Date().toISOString()
+        userData.access_token,
+        userData.refresh_token,
+        userData.expires_at,
+        supabase
+      )
+    } catch (tokenError) {
+      logger.error('Failed to ensure valid token', tokenError, {
+        userId,
+        expiresAt: new Date(userData.expires_at * 1000).toISOString()
       }, 'sync-activities-api', userId, requestId)
       
-      const newTokenData = await stravaAPI.refreshToken(userData.refresh_token)
-      accessToken = newTokenData.access_token
-
-      logger.info('Token refreshed, updating database', {
-        userId,
-        newExpiresAt: new Date(newTokenData.expires_at * 1000).toISOString()
-      }, 'sync-activities-api', userId, requestId)
-
-      // Update tokens in database
-      await supabase
-        .from('users')
-        .update({
-          access_token: newTokenData.access_token,
-          refresh_token: newTokenData.refresh_token,
-          expires_at: newTokenData.expires_at,
-        })
-        .eq('id', userId)
-
-      logger.debug('Database updated with new tokens', { userId }, 'sync-activities-api', userId, requestId)
-    } else {
-      logger.debug('Access token still valid, no refresh needed', {
-        userId,
-        expiresAt: new Date(userData.expires_at * 1000).toISOString(),
-        timeUntilExpiry: Math.round((userData.expires_at * 1000 - Date.now()) / 1000 / 60) + ' minutes'
-      }, 'sync-activities-api', userId, requestId)
+      const response = NextResponse.json({ 
+        error: 'Authentication failed',
+        message: 'Unable to refresh access token. Please re-authenticate with Strava.',
+        requestId,
+        requiresReauth: true
+      }, { status: 401 })
+      
+      timer.end()
+      logger.logResponse('POST', request.url, 401, undefined, { error: 'token_refresh_failed' }, 'sync-activities-api', requestId)
+      return withRequestId(response, requestId)
     }
 
     // Fetch all activities from Strava

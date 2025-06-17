@@ -149,6 +149,33 @@ export class StravaAPI {
     }
   }
 
+  /**
+   * Check if a token should be refreshed proactively
+   * Strava recommends refreshing tokens that expire within 1 hour (3600 seconds)
+   */
+  shouldRefreshToken(expiresAt: number): boolean {
+    const currentTime = Math.floor(Date.now() / 1000)
+    const timeUntilExpiry = expiresAt - currentTime
+    const oneHour = 3600 // 1 hour in seconds
+    
+    logger.debug('Token expiry check', {
+      expiresAt: new Date(expiresAt * 1000).toISOString(),
+      currentTime: new Date(currentTime * 1000).toISOString(),
+      timeUntilExpiry,
+      shouldRefresh: timeUntilExpiry <= oneHour
+    }, 'strava-api')
+    
+    return timeUntilExpiry <= oneHour
+  }
+
+  /**
+   * Check if a token is expired
+   */
+  isTokenExpired(expiresAt: number): boolean {
+    const currentTime = Math.floor(Date.now() / 1000)
+    return currentTime >= expiresAt
+  }
+
   async refreshToken(refreshToken: string): Promise<StravaTokenResponse> {
     logger.info('Refreshing Strava access token', {
       refreshTokenLength: refreshToken.length
@@ -185,15 +212,34 @@ export class StravaAPI {
           statusText: response.statusText,
           errorText
         }, 'strava-api')
-        throw new Error('Failed to refresh token')
+        
+        // More specific error handling based on Strava's common error responses
+        if (response.status === 400) {
+          throw new Error('Invalid refresh token or client credentials')
+        } else if (response.status === 401) {
+          throw new Error('Refresh token has been revoked or expired')
+        } else {
+          throw new Error(`Token refresh failed: ${response.status} ${response.statusText}`)
+        }
       }
 
       const tokenData: StravaTokenResponse = await response.json()
       
+      // Validate the response has required fields
+      if (!tokenData.access_token || !tokenData.refresh_token || !tokenData.expires_at) {
+        logger.error('Invalid token response from Strava', undefined, {
+          hasAccessToken: !!tokenData.access_token,
+          hasRefreshToken: !!tokenData.refresh_token,
+          hasExpiresAt: !!tokenData.expires_at
+        }, 'strava-api')
+        throw new Error('Invalid token response from Strava API')
+      }
+      
       logger.info('Successfully refreshed token', {
         hasAccessToken: !!tokenData.access_token,
         hasRefreshToken: !!tokenData.refresh_token,
-        expiresAt: new Date(tokenData.expires_at * 1000).toISOString()
+        expiresAt: new Date(tokenData.expires_at * 1000).toISOString(),
+        expiresInHours: Math.round((tokenData.expires_at * 1000 - Date.now()) / (1000 * 60 * 60))
       }, 'strava-api')
 
       return tokenData
@@ -379,6 +425,80 @@ export class StravaAPI {
     }, 'strava-api')
 
     return filteredActivities
+  }
+
+  /**
+   * Comprehensive token management - checks if refresh is needed and handles the refresh + database update
+   * Returns the current valid access token
+   */
+  async ensureValidToken(
+    userId: string,
+    currentAccessToken: string,
+    currentRefreshToken: string,
+    expiresAt: number,
+    supabaseClient: any
+  ): Promise<string> {
+    logger.info('Ensuring valid token', {
+      userId,
+      tokenExpiresAt: new Date(expiresAt * 1000).toISOString(),
+      isExpired: this.isTokenExpired(expiresAt),
+      shouldRefresh: this.shouldRefreshToken(expiresAt)
+    }, 'strava-api')
+
+    // If token doesn't need refresh, return current token
+    if (!this.shouldRefreshToken(expiresAt)) {
+      logger.debug('Token is still valid, no refresh needed', {
+        userId,
+        timeUntilExpiry: Math.round((expiresAt * 1000 - Date.now()) / 1000 / 60) + ' minutes'
+      }, 'strava-api')
+      return currentAccessToken
+    }
+
+    // Token needs refresh
+    const refreshReason = this.isTokenExpired(expiresAt) ? 'expired' : 'expires_soon'
+    logger.info('Refreshing token', {
+      userId,
+      reason: refreshReason,
+      expiresAt: new Date(expiresAt * 1000).toISOString()
+    }, 'strava-api')
+
+    try {
+      const newTokenData = await this.refreshToken(currentRefreshToken)
+      
+      // Update tokens in database
+      const { error: updateError } = await supabaseClient
+        .from('users')
+        .update({
+          access_token: newTokenData.access_token,
+          refresh_token: newTokenData.refresh_token,
+          expires_at: newTokenData.expires_at,
+        })
+        .eq('id', userId)
+
+      if (updateError) {
+        logger.error('Failed to update tokens in database after refresh', updateError, {
+          userId,
+          errorCode: updateError.code,
+          errorMessage: updateError.message
+        }, 'strava-api')
+        // Still return the new token even if DB update failed
+        // The app can continue working, but next request might need another refresh
+      } else {
+        logger.info('Successfully refreshed and updated tokens', {
+          userId,
+          newExpiresAt: new Date(newTokenData.expires_at * 1000).toISOString(),
+          expiresInHours: Math.round((newTokenData.expires_at * 1000 - Date.now()) / (1000 * 60 * 60))
+        }, 'strava-api')
+      }
+
+      return newTokenData.access_token
+    } catch (error) {
+      logger.error('Failed to refresh token in ensureValidToken', error, {
+        userId,
+        refreshTokenLength: currentRefreshToken?.length || 0
+      }, 'strava-api')
+      throw new Error('Token refresh failed. Re-authentication required.')
+    }
   }
 }
 

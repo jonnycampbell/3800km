@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 import { logger } from '@/lib/logger'
+import DebugInfo from '@/components/DebugInfo'
 
 // Startup logging
 logger.info('Application starting up', {
@@ -101,21 +102,54 @@ export default function RootLayout({
         <script
           dangerouslySetInnerHTML={{
             __html: `
+              // Add comprehensive client-side debugging
+              console.log('🚀 3800km App Loading - Client Side');
+              console.log('Environment:', '${process.env.NODE_ENV}');
+              console.log('Timestamp:', new Date().toISOString());
+              
               // Debug font loading
               if (typeof document !== 'undefined') {
+                console.log('📄 Document ready, setting up font debugging');
+                
                 document.addEventListener('DOMContentLoaded', function() {
+                  console.log('✅ DOM Content Loaded');
+                  
                   // Check if acumin-pro font is loaded
                   if (document.fonts && document.fonts.check) {
                     const acuminLoaded = document.fonts.check('16px acumin-pro');
-                    console.log('Acumin Pro font loaded:', acuminLoaded);
+                    console.log('🔤 Acumin Pro font loaded:', acuminLoaded);
                     
                     // Wait for fonts to load
                     document.fonts.ready.then(function() {
-                      console.log('All fonts loaded');
+                      console.log('✅ All fonts loaded');
                       const acuminLoadedAfter = document.fonts.check('16px acumin-pro');
-                      console.log('Acumin Pro font loaded after ready:', acuminLoadedAfter);
+                      console.log('🔤 Acumin Pro font loaded after ready:', acuminLoadedAfter);
                     });
                   }
+                  
+                  // Debug page elements
+                  setTimeout(() => {
+                    console.log('🔍 Page Elements Debug:');
+                    console.log('- Body classes:', document.body.className);
+                    console.log('- Main element:', document.querySelector('main'));
+                    console.log('- Total elements:', document.querySelectorAll('*').length);
+                  }, 1000);
+                });
+                
+                // Debug any errors
+                window.addEventListener('error', function(e) {
+                  console.error('🚨 JavaScript Error:', e.error);
+                  console.error('🚨 Error details:', {
+                    message: e.message,
+                    filename: e.filename,
+                    lineno: e.lineno,
+                    colno: e.colno
+                  });
+                });
+                
+                // Debug unhandled promise rejections
+                window.addEventListener('unhandledrejection', function(e) {
+                  console.error('🚨 Unhandled Promise Rejection:', e.reason);
                 });
               }
             `,
@@ -136,6 +170,9 @@ export default function RootLayout({
         <main>
           {children}
         </main>
+        
+        {/* Debug info component */}
+        <DebugInfo />
         
         {/* Footer with build info in development */}
         {process.env.NODE_ENV === 'development' && (

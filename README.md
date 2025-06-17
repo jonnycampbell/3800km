@@ -184,3 +184,64 @@ STRAVA_CLIENT_SECRET=your_client_secret
 STRAVA_ACCESS_TOKEN=your_access_token
 STRAVA_REFRESH_TOKEN=your_refresh_token
 ```
+
+## 🔐 Strava Token Management
+
+This application implements robust Strava token management following [Strava's authentication best practices](https://developers.strava.com/docs/authentication/#refreshingexpiredaccesstokens):
+
+### Key Features
+
+- **Proactive Token Refresh**: Tokens are refreshed automatically when they expire within 1 hour (3600 seconds)
+- **Automatic Retry**: API calls automatically retry with refreshed tokens on 401 errors
+- **Database Integration**: Refreshed tokens are automatically stored in the database
+- **Comprehensive Logging**: Full audit trail of token operations
+- **Error Handling**: Graceful handling of refresh failures with re-authentication prompts
+
+### Token Lifecycle
+
+1. **Initial Authentication**: User authorizes via Strava OAuth
+2. **Token Storage**: Access token, refresh token, and expiry stored in database
+3. **Proactive Refresh**: Before each API call, check if token expires within 1 hour
+4. **Automatic Refresh**: If needed, refresh token and update database
+5. **Fallback Refresh**: If API call returns 401, attempt token refresh and retry
+
+### Usage Examples
+
+```typescript
+// Automatic token management
+const accessToken = await stravaAPI.ensureValidToken(
+  userId,
+  currentAccessToken,
+  currentRefreshToken,
+  expiresAt,
+  supabase
+);
+
+// Check if token should be refreshed
+const shouldRefresh = stravaAPI.shouldRefreshToken(expiresAt);
+
+// Check if token is expired
+const isExpired = stravaAPI.isTokenExpired(expiresAt);
+```
+
+### Token Refresh Flow
+
+```mermaid
+graph TD
+    A[API Request] --> B{Token expires in < 1hr?}
+    B -->|No| C[Use current token]
+    B -->|Yes| D[Refresh token]
+    D --> E{Refresh successful?}
+    E -->|Yes| F[Update database]
+    E -->|No| G[Return auth error]
+    F --> H[Use new token]
+    C --> I[Make API call]
+    H --> I
+    I --> J{API call successful?}
+    J -->|Yes| K[Return data]
+    J -->|401 Error| L[Attempt refresh & retry]
+    L --> M{Refresh successful?}
+    M -->|Yes| N[Retry API call]
+    M -->|No| O[Return auth error]
+    N --> K
+```
