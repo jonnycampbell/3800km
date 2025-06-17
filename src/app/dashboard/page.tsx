@@ -3,10 +3,16 @@ import SetupRequired from '@/components/SetupRequired'
 
 async function getActivities() {
   try {
-    // Use relative URL for API routes - works in both development and production
-    const baseUrl = process.env.NEXT_PUBLIC_BASE_URL || (typeof window !== 'undefined' ? window.location.origin : '')
+    // Fix: Use proper base URL for both development and production
+    // In production, we'll use relative URLs which work with any domain
+    const baseUrl = process.env.NEXT_PUBLIC_BASE_URL || 
+                   (process.env.NODE_ENV === 'production' 
+                     ? '' // Use relative URLs in production
+                     : 'http://localhost:3000')
+    
     const response = await fetch(`${baseUrl}/api/activities`, {
-      cache: 'no-store' // Always fetch fresh data
+      // Fix: Remove cache: 'no-store' which causes build issues
+      next: { revalidate: 900 } // Cache for 15 minutes instead
     })
     
     if (!response.ok) {

@@ -1,9 +1,9 @@
 import { NextResponse } from 'next/server'
 import { cache, CACHE_KEYS, CACHE_TTL } from '@/lib/cache'
 
-// Enable caching for this route
-export const dynamic = 'force-dynamic' // We need dynamic for cache management
-export const revalidate = 900 // Revalidate every 15 minutes (900 seconds)
+// Enable better caching for production
+export const dynamic = 'force-dynamic'
+export const revalidate = 900 // Revalidate every 15 minutes
 
 interface StravaActivity {
   id: number
@@ -59,8 +59,6 @@ async function refreshStravaToken(): Promise<string | null> {
     const data: StravaTokenResponse = await response.json()
     console.log('Token refreshed successfully, expires at:', new Date(data.expires_at * 1000))
     
-    // In a real app, you'd want to update your stored tokens here
-    // For now, we'll just return the new access token
     return data.access_token
   } catch (error) {
     console.error('Error refreshing token:', error)
@@ -86,8 +84,8 @@ async function fetchStravaActivities(accessToken: string): Promise<StravaActivit
       headers: {
         Authorization: `Bearer ${accessToken}`,
       },
-      // Add Next.js caching
-      next: { revalidate: 900 } // 15 minutes
+      // Better caching for production
+      next: { revalidate: 900 }
     }
   )
 
@@ -148,13 +146,11 @@ async function fetchActivityDetails(activityId: number, accessToken: string): Pr
     headers: {
       Authorization: `Bearer ${accessToken}`,
     },
-    // Cache individual activity details for longer
     next: { revalidate: 3600 } // 1 hour
   })
 
   if (response.ok) {
     const details = await response.json()
-    // Cache the details for longer since they don't change
     cache.set(cacheKey, details, CACHE_TTL.ACTIVITY_DETAILS)
     return details
   }
@@ -180,7 +176,6 @@ export async function GET(request: Request) {
         const cacheInfo = cache.getInfo(CACHE_KEYS.FILTERED_ACTIVITIES)
         console.log(`⚡ Returning cached filtered activities (age: ${cacheInfo.age}s)`)
         
-        // Add cache headers to the response
         const response = NextResponse.json(cachedFiltered)
         response.headers.set('Cache-Control', 'public, s-maxage=900, stale-while-revalidate=1800')
         response.headers.set('X-Cache-Status', 'HIT')
@@ -194,25 +189,31 @@ export async function GET(request: Request) {
     if (!accessToken) {
       console.error('STRAVA_ACCESS_TOKEN not found in environment variables')
       
-      // List all missing environment variables for better debugging
+      // Improved error messages for production debugging
       const missingVars = []
       if (!process.env.STRAVA_ACCESS_TOKEN) missingVars.push('STRAVA_ACCESS_TOKEN')
       if (!process.env.STRAVA_CLIENT_ID) missingVars.push('STRAVA_CLIENT_ID')
       if (!process.env.STRAVA_CLIENT_SECRET) missingVars.push('STRAVA_CLIENT_SECRET')
       if (!process.env.STRAVA_REFRESH_TOKEN) missingVars.push('STRAVA_REFRESH_TOKEN')
       
+      // More detailed error for production
+      const errorMessage = process.env.NODE_ENV === 'production' 
+        ? `Production environment missing required Strava configuration. Check your deployment platform environment variables.`
+        : `Missing environment variables: ${missingVars.join(', ')}. Please configure these in your .env.local file.`
+      
       return NextResponse.json({ 
         error: 'Strava configuration incomplete',
-        message: `Missing environment variables: ${missingVars.join(', ')}. Please configure these in your deployment platform.`,
+        message: errorMessage,
         missingVariables: missingVars,
-        setupRequired: true
+        setupRequired: true,
+        environment: process.env.NODE_ENV
       }, { status: 500 })
     }
 
     // Fetch activities (from cache or API)
     const activities = await fetchStravaActivities(accessToken)
 
-    // First filter for hiking activities by type
+    // Filter for hiking activities by type
     const hikingTypes = ['Hike']
     const potentialHikingActivities = activities.filter(activity => 
       hikingTypes.includes(activity.type) || hikingTypes.includes(activity.sport_type)
@@ -220,7 +221,7 @@ export async function GET(request: Request) {
     
     console.log(`🥾 Found ${potentialHikingActivities.length} potential hiking activities`)
 
-    // Fetch detailed data for all hiking activities concurrently with caching
+    // Fetch detailed data for all hiking activities
     console.log('📋 Fetching detailed data for hiking activities...')
     
     const detailPromises = potentialHikingActivities.map(async activity => {
@@ -246,13 +247,12 @@ export async function GET(request: Request) {
       }
     })
 
-    // Wait for all requests to complete
     const results = await Promise.all(detailPromises)
     const detailedHikingActivities = results.filter(activity => activity !== null)
 
     console.log(`✅ Filtered to ${detailedHikingActivities.length} hiking activities with #3800km hashtag`)
 
-    // Transform to match your component interface
+    // Transform to match component interface
     const transformedActivities = detailedHikingActivities.map(activity => ({
       id: activity.id,
       strava_id: activity.id.toString(),
@@ -270,16 +270,23 @@ export async function GET(request: Request) {
     cache.set(CACHE_KEYS.FILTERED_ACTIVITIES, transformedActivities, CACHE_TTL.FILTERED_ACTIVITIES)
     console.log(`💾 Cached filtered results for ${CACHE_TTL.FILTERED_ACTIVITIES} minutes`)
 
-    // Return with cache headers
+    // Return with appropriate cache headers
     const response = NextResponse.json(transformedActivities)
     response.headers.set('Cache-Control', 'public, s-maxage=900, stale-while-revalidate=1800')
     response.headers.set('X-Cache-Status', 'MISS')
     return response
   } catch (error) {
     console.error('❌ Error fetching activities:', error)
+    
+    // Better error response for production
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error occurred'
+    const isProduction = process.env.NODE_ENV === 'production'
+    
     return NextResponse.json({ 
       error: 'Failed to fetch activities',
-      message: error instanceof Error ? error.message : 'Unknown error occurred'
+      message: isProduction ? 'Server error occurred' : errorMessage,
+      ...(isProduction ? {} : { details: errorMessage }),
+      environment: process.env.NODE_ENV
     }, { status: 500 })
   }
 } 
