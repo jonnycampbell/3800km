@@ -11,7 +11,7 @@ export default function SetupRequired() {
             </div>
             <h1 className="text-3xl font-bold text-gray-900 mb-2">Setup Required</h1>
             <p className="font-normal text-gray-600">
-              Your Strava API access token is missing or doesn't have the required permissions.
+              Your Strava API access token is missing or doesn&apos;t have the required permissions.
             </p>
           </div>
           

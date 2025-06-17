@@ -134,7 +134,7 @@ async function fetchStravaActivities(accessToken: string): Promise<StravaActivit
   return activities
 }
 
-async function fetchActivityDetails(activityId: number, accessToken: string): Promise<any> {
+async function fetchActivityDetails(activityId: number, accessToken: string): Promise<unknown> {
   const cacheKey = CACHE_KEYS.STRAVA_ACTIVITY_DETAILS(activityId)
   
   // Check cache first
@@ -189,7 +189,7 @@ export async function GET(request: Request) {
       }
     }
 
-    let accessToken = process.env.STRAVA_ACCESS_TOKEN
+    const accessToken = process.env.STRAVA_ACCESS_TOKEN
 
     if (!accessToken) {
       console.error('STRAVA_ACCESS_TOKEN not found in environment variables')
@@ -216,17 +216,18 @@ export async function GET(request: Request) {
     
     const detailPromises = potentialHikingActivities.map(async activity => {
       try {
-        const detailedActivity = await fetchActivityDetails(activity.id, accessToken!)
+        const detailedActivity = await fetchActivityDetails(activity.id, accessToken)
         
         if (detailedActivity) {
-          const hasHashtag = detailedActivity.description && 
-                            detailedActivity.description.toLowerCase().includes('#3800km')
+          const activityWithDescription = detailedActivity as { description?: string }
+          const hasHashtag = activityWithDescription.description && 
+                            activityWithDescription.description.toLowerCase().includes('#3800km')
           
           console.log(`🔍 "${activity.name}": ${hasHashtag ? '✅ HAS #3800km' : '❌ No hashtag'}`)
           
           return hasHashtag ? {
             ...activity,
-            description: detailedActivity.description
+            description: activityWithDescription.description
           } : null
         }
         return null

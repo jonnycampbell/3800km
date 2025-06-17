@@ -40,7 +40,7 @@ export default async function Dashboard() {
     }
   }
   
-  const totalDistance = activities.reduce((sum: number, activity: any) => sum + activity.distance, 0)
+  const totalDistance = activities.reduce((sum: number, activity: { distance: number }) => sum + activity.distance, 0)
   const totalKm = totalDistance / 1000
   const goalKm = 3800
   const remainingKm = goalKm - totalKm

@@ -25,7 +25,7 @@ export default function SyncButton() {
       } else {
         setMessage(data.error || 'Failed to sync activities')
       }
-    } catch (error) {
+    } catch {
       setMessage('Error syncing activities')
     } finally {
       setIsSyncing(false)

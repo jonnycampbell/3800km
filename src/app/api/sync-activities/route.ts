@@ -1,9 +1,9 @@
-import { NextRequest, NextResponse } from 'next/server'
+import { NextResponse } from 'next/server'
 import { stravaAPI } from '@/lib/strava'
 import { supabase } from '@/lib/supabase'
 import { cookies } from 'next/headers'
 
-export async function POST(request: NextRequest) {
+export async function POST() {
   try {
     const cookieStore = cookies()
     const userId = (await cookieStore).get('strava_user_id')?.value
