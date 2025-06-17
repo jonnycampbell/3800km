@@ -193,9 +193,18 @@ export async function GET(request: Request) {
 
     if (!accessToken) {
       console.error('STRAVA_ACCESS_TOKEN not found in environment variables')
+      
+      // List all missing environment variables for better debugging
+      const missingVars = []
+      if (!process.env.STRAVA_ACCESS_TOKEN) missingVars.push('STRAVA_ACCESS_TOKEN')
+      if (!process.env.STRAVA_CLIENT_ID) missingVars.push('STRAVA_CLIENT_ID')
+      if (!process.env.STRAVA_CLIENT_SECRET) missingVars.push('STRAVA_CLIENT_SECRET')
+      if (!process.env.STRAVA_REFRESH_TOKEN) missingVars.push('STRAVA_REFRESH_TOKEN')
+      
       return NextResponse.json({ 
-        error: 'Strava access token not configured',
-        message: 'Please run the setup script: node scripts/setup-strava-auth.js',
+        error: 'Strava configuration incomplete',
+        message: `Missing environment variables: ${missingVars.join(', ')}. Please configure these in your deployment platform.`,
+        missingVariables: missingVars,
         setupRequired: true
       }, { status: 500 })
     }

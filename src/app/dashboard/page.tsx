@@ -3,7 +3,9 @@ import SetupRequired from '@/components/SetupRequired'
 
 async function getActivities() {
   try {
-    const response = await fetch(`${process.env.NEXT_PUBLIC_BASE_URL || 'http://localhost:3001'}/api/activities`, {
+    // Use relative URL for API routes - works in both development and production
+    const baseUrl = process.env.NEXT_PUBLIC_BASE_URL || (typeof window !== 'undefined' ? window.location.origin : '')
+    const response = await fetch(`${baseUrl}/api/activities`, {
       cache: 'no-store' // Always fetch fresh data
     })
     
